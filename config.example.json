@@ -1,0 +1,30 @@
+{
+  "heartbeatFile": "data/heartbeat.json",
+  "heartbeatMs": 60000,
+  "logFile": "data/relay.log",
+  "mode": "dry-run",
+  "museA": {
+    "inbox": "data/inbox-a.jsonl",
+    "name": "Suneo (Muse A, akun ini)",
+    "number": "+62XXXXXXXXXX",
+    "outbox": "data/outbox-a.jsonl",
+    "sessionDir": "auth/a"
+  },
+  "museB": {
+    "inbox": "data/inbox-b.jsonl",
+    "name": "Muse B (akun garasigerobak@gmail.com)",
+    "number": "+62YYYYYYYYYY",
+    "outbox": "data/outbox-b.jsonl",
+    "sessionDir": "auth/b"
+  },
+  "pidFile": "data/relay.pid",
+  "pollMs": 2000,
+  "retry": {
+    "baseDelayMs": 5000,
+    "maxAttempts": 5
+  },
+  "space": {
+    "ingestSecret": "",
+    "ingestUrl": ""
+  }
+}

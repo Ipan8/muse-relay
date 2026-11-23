@@ -1,0 +1,22 @@
+# muse-relay.service — contoh systemd unit (OPSIONAL; alternatif cron).
+# Salin ke /etc/systemd/system/muse-relay.service, sesuaikan User + WorkingDirectory,
+# lalu: sudo systemctl daemon-reload && sudo systemctl enable --now muse-relay
+# Systemd me-restart bot otomatis kalau crash (Restart=always). Watchdog cron
+# tetap berguna sebagai backstop kalau systemd sendiri bermasalah.
+[Unit]
+Description=Muse Relay Bot (2 Muse via WhatsApp)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/muse-relay
+ExecStart=/usr/bin/node relay.js
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/ubuntu/muse-relay/data/relay.log
+StandardError=append:/home/ubuntu/muse-relay/data/relay.log
+
+[Install]
+WantedBy=multi-user.target

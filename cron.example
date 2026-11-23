@@ -1,0 +1,9 @@
+# cron.example — contoh cron untuk watchdog + heartbeat check.
+# Pasang dengan: crontab -e, lalu tempel baris-baris ini (sesuaikan path).
+# JANGAN jalankan watchdog sebagai loop — watchdog.sh itu satu-shot per run.
+
+# Watchdog: cek bot tiap 5 menit, restart kalau mati.
+*/5 * * * * /home/ubuntu/muse-relay/watchdog.sh >> /home/ubuntu/muse-relay/data/watchdog.log 2>&1
+
+# (Opsional) Bersihkan log relay yang sudah >30 hari, tiap Minggu 03:00.
+# 0 3 * * 0 find /home/ubuntu/muse-relay/data -name "*.log" -mtime +30 -delete

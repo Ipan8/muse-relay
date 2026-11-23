@@ -1,0 +1,10 @@
+node_modules/
+auth/
+data/*.jsonl
+data/*.log
+data/*.json
+data/.cursor.json
+data/.read-cursor-*.json
+data/relay.pid
+config.json
+*.tmp-*
