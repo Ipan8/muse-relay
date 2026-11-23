@@ -338,36 +338,54 @@ async function connectSide(side) {
   sock.ev.on('creds.update', saveCreds);
   // Mode pairing-code: tanpa kamera — kode 8 karakter dimasukkan di
   // WhatsApp (Perangkat tertaut > Tautkan perangkat > "Tautkan dengan
-  // nomor telepon"). Hanya diminta kalau sesi ini belum terdaftar.
-  let pairingRequested = false;
+  // nomor telepon"). Kode diminta saat socket masuk state pairing (event
+  // QR), lalu di-refresh tiap 40 dtk sampai sisi ini terhubung — jadi
+  // selalu ada kode segar (kode pairing cepat kedaluwarsa, ~1 menit).
+  // Hanya untuk sesi yang belum terdaftar.
+  let pairingTimer = null;
+  let pairingBusy = false;
+  const stopPairingRefresh = () => { if (pairingTimer) { clearInterval(pairingTimer); pairingTimer = null; } };
+  async function requestPairingCodeOnce() {
+    if (pairingBusy) return;
+    pairingBusy = true;
+    try {
+      const phone = String(cfg.number).replace(/[^0-9]/g, '');
+      const code = await sock.requestPairingCode(phone);
+      const appName = side === 'A' ? 'WhatsApp BIASA (nomor utama)' : 'WhatsApp BUSINESS (nomor kedua)';
+      info(`[live:${side}] KODE PAIRING TERBARU nomor ${cfg.number}: ${code} (berlaku ~1 menit, pakai kode ini)`);
+      info(`[live:${side}] masukkan kode itu di ${appName}: Perangkat tertaut > Tautkan perangkat > "Tautkan dengan nomor telepon" (tanpa scan QR).`);
+    } catch (e) {
+      error(`[live:${side}] gagal minta kode pairing: ${e.message} — pakai QR (jalankan tanpa --pairing-code).`);
+    } finally {
+      pairingBusy = false;
+    }
+  }
+  function startPairingRefresh() {
+    if (pairingTimer || state.creds.registered) return;
+    requestPairingCodeOnce();
+    pairingTimer = setInterval(requestPairingCodeOnce, 40000);
+  }
+  // Fallback: kalau event QR tidak muncul dalam 10 dtk, minta kode sekali.
   if (PAIRING_CODE && !state.creds.registered) {
-    setTimeout(async () => {
-      if (pairingRequested) return;
-      pairingRequested = true;
-      try {
-        const phone = String(cfg.number).replace(/[^0-9]/g, '');
-        const code = await sock.requestPairingCode(phone);
-        info(`[live:${side}] KODE PAIRING nomor ${cfg.number}: ${code}`);
-        info(`[live:${side}] masukkan kode itu di WhatsApp ${cfg.number}: Perangkat tertaut > Tautkan perangkat > "Tautkan dengan nomor telepon" (tanpa scan QR).`);
-      } catch (e) {
-        error(`[live:${side}] gagal minta kode pairing: ${e.message} — pakai QR (jalankan tanpa --pairing-code).`);
-      }
-    }, 3000);
+    setTimeout(startPairingRefresh, 10000);
   }
   sock.ev.on('connection.update', (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
       if (PAIRING_CODE) {
-        // Kode pairing adalah jalurnya; QR tidak ditampilkan supaya tidak bingung.
-        info(`[live:${side}] (mode pairing-code: pakai kode di atas, bukan QR)`);
+        startPairingRefresh();
       } else {
         info(`[live:${side}] scan QR ini dengan WhatsApp nomor ${cfg.number} (sekali saja, pairing manual):`);
         try { require('qrcode-terminal').generate(qr, { small: true }); }
         catch (_) { console.log(qr); }
       }
     }
-    if (connection === 'open') info(`[live:${side}] terhubung sebagai ${cfg.number}`);
+    if (connection === 'open') {
+      stopPairingRefresh();
+      info(`[live:${side}] terhubung sebagai ${cfg.number}`);
+    }
     if (connection === 'close') {
+      stopPairingRefresh();
       const code = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output
         ? lastDisconnect.error.output.statusCode : '?';
       warn(`[live:${side}] koneksi putus (code ${code}). Reconnect otomatis...`);

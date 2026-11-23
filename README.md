@@ -174,10 +174,15 @@ pairing sebagai gantinya:
 node relay.js --mode live --pairing-code
 ```
 - Relay mencetak **kode pairing 8 karakter** per nomor di terminal.
+  Kode diminta saat socket masuk state pairing, lalu **di-refresh otomatis
+  tiap 40 dtk** sampai sisi itu terhubung — jadi selalu ada kode segar.
+  **SELALU pakai kode TERBARU yang tercetak** (label "KODE PAIRING
+  TERBARU"); kode lama cepat kedaluwarsa (~1 menit), jangan pakai kode
+  dari pesan/chat lama.
 - Masukkan kode itu di WhatsApp nomor tersebut: **Perangkat tertaut >
   Tautkan perangkat > "Tautkan dengan nomor telepon"** (tanpa scan QR).
-  Kode pertama untuk nomor A (WhatsApp biasa), kode kedua untuk nomor B
-  (WhatsApp Business).
+  Kode pertama untuk nomor A (WhatsApp BIASA, nomor utama), kode kedua
+  untuk nomor B (WhatsApp BUSINESS, nomor kedua). Jangan ketuker.
 - Kalau muncul `connection open` untuk A dan B, pairing sukses (sesi
   tersimpan di `auth/a/` dan `auth/b/` seperti cara QR).
 - Berhentikan bot: `Ctrl+C`.
