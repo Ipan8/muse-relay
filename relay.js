@@ -168,14 +168,22 @@ function jidOf(number) {
 }
 
 // Normalisasi JID ke bentuk nomor HP "digits@s.whatsapp.net".
-// Mengembalikan null kalau input bukan JID nomor HP (mis. LID "@lid").
-// Dipakai untuk participantPn & p.jid yang sudah pasti nomor HP.
+// Mengembalikan null kalau input bukan nomor HP (mis. LID "@lid").
+// Terima JID lengkap ("6285...@s.whatsapp.net", buang sufiks device ":5")
+// maupun nomor polos ("6285..."). Dipakai untuk participantPn & p.jid.
 // WhatsApp kini sering memakai LID (@lid) sebagai identitas peserta grup;
 // tanpa normalisasi ini, perbandingan dengan OWNER_JID (nomor HP) gagal.
 function asPhoneJid(jid) {
   if (!jid || typeof jid !== 'string') return null;
-  if (!jid.endsWith('@s.whatsapp.net')) return null;
-  const user = jid.slice(0, jid.indexOf('@')).split(':')[0]; // buang sufiks device ":5"
+  let s = jid.trim();
+  if (!s) return null;
+  if (!s.includes('@')) {
+    // Nomor polos tanpa sufiks — terima hanya kalau murni digit.
+    if (!/^\d+$/.test(s)) return null;
+    return s + '@s.whatsapp.net';
+  }
+  if (!s.endsWith('@s.whatsapp.net')) return null;
+  const user = s.slice(0, s.indexOf('@')).split(':')[0]; // buang sufiks device ":5"
   if (!/^\d+$/.test(user)) return null;
   return user + '@s.whatsapp.net';
 }
@@ -463,10 +471,18 @@ async function connectSide(side) {
       // pesan owner dari nomor A terlihat sebagai fromMe di sesi A, tapi
       // sebagai pesan biasa di sesi B; dedup by id di handleGroupMessage).
       if (fromJid.endsWith('@g.us')) {
-        // Utamakan participantPn (nomor HP pengirim). m.key.participant
-        // bisa berupa LID ("...@lid") yang tidak cocok dengan OWNER_JID
-        // (nomor HP) — itu yang bikin pesan owner di grup diabaikan.
-        const senderJid = asPhoneJid(m.key.participantPn) || m.key.participant || (m.key.fromMe ? jidOf(cfg.number) : fromJid);
+        // Tentukan pengirim grup. Urutan (paling andal dulu):
+        // 1) fromMe — Baileys sudah menangani dual identitas PN/LID untuk
+        //    fromMe, jadi pesan owner dari nomor A selalu dikenali di sesi A
+        //    walau participant-nya berupa LID. Ini jalur utama.
+        // 2) participantPn (nomor HP pengirim) — kalau ada.
+        // 3) participant — fallback (bisa LID, tidak cocok dengan OWNER_JID).
+        let senderJid;
+        if (m.key.fromMe) {
+          senderJid = jidOf(cfg.number);
+        } else {
+          senderJid = asPhoneJid(m.key.participantPn) || m.key.participant || fromJid;
+        }
         handleGroupMessage({
           id: m.key.id || `wa-${Date.now()}`,
           senderJid, remoteJid: fromJid, text,
