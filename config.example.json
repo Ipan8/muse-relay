@@ -19,6 +19,11 @@
   },
   "pidFile": "data/relay.pid",
   "pollMs": 2000,
+  "group": {
+    "enabled": true,
+    "groupJid": "",
+    "ownerNumber": ""
+  },
   "retry": {
     "baseDelayMs": 5000,
     "maxAttempts": 5

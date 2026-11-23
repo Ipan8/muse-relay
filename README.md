@@ -83,6 +83,8 @@ muse-relay/
 
 File runtime (dibuat otomatis saat jalan, jangan di-commit):
 `data/*.jsonl`, `data/*.log`, `data/*.json`, `auth/a/`, `auth/b/` (sesi WA).
+File mode grup: `data/group.jsonl` (transkrip pesan keluar ke grup),
+`data/group-incoming.jsonl` (injeksi pesan grup masuk, dry-run saja).
 
 ## Install di VPS (copy-paste di Termius)
 
@@ -135,8 +137,10 @@ Simpan: `Ctrl+O`, `Enter`, `Ctrl+X`.
 ```bash
 npm test
 ```
-Harus keluar `SEMUA TES LOLOS` (14 tes: relay start, 2 pesan A→B + 2 pesan
-B→A sampai di inbox yang benar, watchdog restart bot yang di-kill, heartbeat).
+Harus keluar `SEMUA TES LOLOS` (26 tes: relay start, 2 pesan A→B + 2 pesan
+B→A sampai di inbox yang benar, mode grup — perintah owner ke kedua inbox,
+outbox ke grup + DM, pesan non-owner diabaikan, dedup, anti-gema —,
+watchdog restart bot yang di-kill, heartbeat).
 Kalau ada yang FAIL, jangan lanjut — kirim outputnya ke Suneo.
 
 Tes manual:
@@ -197,6 +201,48 @@ node muse-send.js B "Sip, gue eksekusi bagian listing-nya."
 node muse-read.js A
 ```
 
+## Mode grup — Ivan kontrol 2 Muse dari 1 grup WA
+
+Ivan bisa ngasih perintah ke **kedua Muse sekaligus** dari satu grup
+WhatsApp, dan balasan kedua Muse muncul di grup itu juga.
+
+```
+Grup WA (nomor A + nomor B)
+  Ivan ketik perintah di grup
+    -> relay tulis ke inbox A DAN inbox B (from: "owner")
+  Muse A balas via outbox-a
+    -> relay kirim ke DM B (seperti biasa) DAN ke grup
+  Muse B balas via outbox-b
+    -> relay kirim ke DM A (seperti biasa) DAN ke grup
+```
+
+### Setup grup (langkah Ivan, di HP)
+
+1. **Buat grup WhatsApp** berisi kedua nomor: nomor utama Ivan + nomor
+   kedua. Nama grup bebas, mis. "Muse A + Muse B".
+2. **Tidak perlu isi JID manual** — relay di live mode otomatis mencari
+   grup pertama yang berisi kedua nomor (auto-detect, dicek tiap 1 menit).
+   JID grup yang ketemu dicatat di `data/relay.log` dan
+   `data/heartbeat.json` (`group.groupJid`).
+3. Kalau mau dikunci ke grup tertentu (mis. ada lebih dari satu grup berisi
+   kedua nomor), isi `group.groupJid` di `config.json` dengan JID dari log,
+   lalu restart relay. JID grup bentuknya seperti
+   `1203630xxxxxxxxx@g.us`.
+4. **Restart relay** setelah grup dibuat/diubah (systemd: `sudo systemctl
+   restart muse-relay`, atau matikan + jalankan ulang).
+
+### Cara pakai mode grup
+
+- Ivan ketik perintah di grup seperti biasa — kedua Muse membacanya lewat
+  `muse-read.js` (tampil sebagai `owner -> A:` / `owner -> B:`).
+- Pesan di grup dari **peserta selain owner diabaikan** — cuma nomor utama
+  Ivan yang dianggap perintah.
+- Balasan Muse tetap terkirim via DM lawan seperti biasa; salinan grupnya
+  cuma tambahan (kalau pengiriman grup gagal, DM tetap jalan).
+- **Matikan mode grup:** isi `"enabled": false` di `group` di `config.json`,
+  lalu restart relay. DM A↔B tetap jalan normal.
+- Detail protokol lengkap: `protocol.md` bagian "Mode grup".
+
 ## Space monitor
 
 Space **"Muse Relay Monitor"** menampilkan percakapan A↔B + status tiap Muse
@@ -228,6 +274,9 @@ Space **"Muse Relay Monitor"** menampilkan percakapan A↔B + status tiap Muse
   perlu akses ke folder ini / config yang sama di VPS (atau jalankan
   `muse-send.js` / `muse-read.js` dari terminal VPS).
 - [ ] **Install + pairing di VPS** (langkah copy-paste di atas, via Termius).
+- [ ] **Mode grup (opsional, disetujui Ivan 23 Nov 11:19):** buat grup WA
+  berisi kedua nomor di HP, relay auto-detect JID-nya (atau isi manual
+  `group.groupJid`). Matikan kapan saja via `group.enabled: false`.
 - [ ] **(Opsional) isi `space.ingestUrl`** kalau mau Space monitor sync live.
 
 ## Keamanan

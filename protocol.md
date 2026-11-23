@@ -22,6 +22,9 @@ yang kena bot-nya; Muse-nya tetap aman dan obrolan tersimpan di file.
 | `data/heartbeat.json` | relay (tiap 1 mnt) | Space monitor | status hidup relay + aktivitas terakhir |
 | `data/relay.log` | relay + watchdog | operator | log teks semua kejadian |
 | `data/relay.pid` | relay | watchdog | PID proses relay yang sedang jalan |
+| `data/group.jsonl` | relay | operator / tes | transkrip pesan outbox yang diteruskan ke grup |
+| `data/group-incoming.jsonl` | operator / tes (dry-run saja) | relay | injeksi pesan grup masuk (simulasi WA grup) |
+| `data/.group-cursor.json` | relay | relay | offset byte group-incoming.jsonl yang sudah dibaca |
 
 ## Format pesan (satu baris JSON per pesan)
 
@@ -48,6 +51,71 @@ Pesan masuk di inbox punya field tambahan dari relay:
 kalau pengirimnya manusia, bukan Muse lawan — relay menulis semua pesan
 masuk ke inbox, bukan cuma dari Muse lawan.
 
+## Mode grup — Ivan perintah kedua Muse dari satu grup WA
+
+Grup WhatsApp berisi **kedua nomor** (A + B). Relay memantau grup itu:
+
+| Arah | Perilaku |
+|---|---|
+| Owner kirim pesan di grup | Relay tulis ke inbox **A dan B** (`from: "owner"`, `via: "whatsapp-group"` / `"dry-run-group"`, `group: true`). Kedua Muse membacanya lewat `muse-read.js` seperti pesan biasa. |
+| Muse A/B kirim via outbox | Relay kirim ke **DM lawan (seperti biasa) DAN ke grup** (sebagai nomor Muse itu). Grup bersifat tambahan, bukan pengganti DM. |
+| Peserta grup BUKAN owner kirim pesan | Diabaikan (dicatat di log saja). |
+| Pesan relay sendiri di grup | Diabaikan (anti-gema): relay tidak memproses ulang pesannya sendiri yang kembali lewat sesi Baileys lawan — dideteksi dari ID pesan WA yang dikirim + cache teks 15 detik. |
+
+Config (`config.json` → `group`):
+
+```json
+"group": {
+  "enabled": true,
+  "groupJid": "",
+  "ownerNumber": ""
+}
+```
+
+| Field | Arti |
+|---|---|
+| `enabled` | `false` = mode grup mati total (hanya DM A↔B). Default `true`. |
+| `groupJid` | JID grup, mis. `"1203630xxxxxxxxx@g.us"`. Kosong (`""`) = **auto-detect** di live mode: relay mencari grup pertama yang berisi nomor A DAN B (dicek tiap 1 menit sampai ketemu, JID-nya dicatat di `data/relay.log` + `data/heartbeat.json`). Di dry-run dipakai grup virtual `"group-dry-run@g.us"`. |
+| `ownerNumber` | Nomor WA owner (Ivan). Kosong (`""`) = nomor Muse A. Hanya pesan dari nomor ini yang diteruskan sebagai perintah owner. |
+
+Format perintah owner di inbox (sama untuk A dan B, beda field `to`):
+
+```json
+{"id": "wa-...", "from": "owner", "to": "A", "text": "Kerjakan riset X, bagi tugas", "ts": 1795400000000, "receivedAt": 1795400001000, "receivedAtIso": "2026-11-23T03:00:01.000Z", "via": "whatsapp-group", "group": true, "groupJid": "1203630xxxxxxxxx@g.us"}
+```
+
+Transkrip pesan keluar ke grup (`data/group.jsonl`):
+
+```json
+{"id": "A-1795400000000-x7k2", "from": "A", "to": "group", "text": "...", "ts": 1795400000000, "groupJid": "1203630xxxxxxxxx@g.us", "via": "whatsapp-group"}
+```
+
+### Injeksi pesan grup (dry-run saja, untuk tes)
+
+Di dry-run, pesan grup masuk disimulasikan lewat file
+`data/group-incoming.jsonl` (satu baris JSON per pesan):
+
+```json
+{"id": "g-1", "senderJid": "62812...@s.whatsapp.net", "text": "Kerjakan riset X", "ts": 1795400000000}
+```
+
+- `senderJid` = JID pengirim (owner = JID nomor utama Ivan; bukan owner = diabaikan).
+- `remoteJid` opsional (default = grup yang aktif). Di live mode file ini
+  diabaikan — sumber pesan grup adalah event Baileys.
+- Dedup by `id`: pesan dengan id yang sama tidak diproses 2x (juga
+  berlaku antar kedua sesi Baileys di live mode — pesan owner yang sama
+  terlihat di kedua sesi).
+
+### Catatan live mode
+
+- Pesan owner dari nomor A terlihat sebagai **fromMe di sesi A** tapi
+  sebagai pesan biasa di sesi B — relay menangani pesan grup SEBELUM
+  skip `fromMe`, jadi perintah owner tetap masuk lewat sesi B.
+- Gagal kirim ke grup (mis. bot dikeluarkan dari grup) TIDAK menggagalkan
+  pengiriman DM — dicatat sebagai warning di log, DM tetap jalan.
+- Kalau relay belum menemukan grup (auto-detect belum ketemu), pesan
+  outbox tetap terkirim via DM; pengiriman grup dimulai begitu JID ketemu.
+
 ## Aturan main
 
 1. **Muse hanya menulis ke outbox-nya sendiri.** Jangan tulis ke outbox lawan,
@@ -65,7 +133,13 @@ masuk ke inbox, bukan cuma dari Muse lawan.
    `{"relay": {"pid", "mode", "startedAt", "lastTick"}, "A": {"lastActivity"}, "B": {"lastActivity"}}`.
    `lastActivity` = `ts` pesan terakhir di inbox/outbox sisi itu (0 kalau belum ada).
    Space monitor memakai ini + isi inbox untuk status hidup/mati dan
-   "siapa yang belum balas sejak kapan".
+   "siapa yang belum balas sejak kapan". Heartbeat juga membawa
+   `group: {enabled, groupJid, detected}` untuk status mode grup.
+6. **Mode grup**: hanya pesan dari nomor owner di grup yang diteruskan
+   ke kedua Muse. Pesan grup dari peserta lain diabaikan. Pesan outbox
+   Muse dikirim ke grup sebagai tambahan DM — kalau pengiriman grup
+   gagal, DM tetap jalan. Matikan mode grup dengan
+   `group.enabled: false` di `config.json` + restart relay.
 6. **Nomor WA TIDAK BOLEH ada di kode** kecuali `config.json` / `config.example.json`
    (placeholder `+62XXXXXXXXXX`). Jangan commit `config.json` berisi nomor asli
    ke repo publik. Sesi Baileys tersimpan di `auth/a/` dan `auth/b/` — folder

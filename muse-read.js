@@ -11,6 +11,7 @@
  * ditampilkan sekali sebagai "baru". Pakai --all untuk membaca ulang semua.
  * Output: satu baris per pesan: [ISO-time] PENGIRIM: teks
  * Pesan dari manusia (bukan dari Muse lawan) tampil dengan from = JID WA.
+ * Perintah owner dari grup tampil dengan from = "owner" (lihat protocol.md).
  */
 const fs = require('fs');
 const path = require('path');

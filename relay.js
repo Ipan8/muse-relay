@@ -7,6 +7,16 @@
  *   Muse B tulis pesan ke outbox-b.jsonl  -> relay kirim ke nomor A
  *   Pesan masuk ditulis relay ke inbox lawan, dibaca Muse-nya.
  *
+ * Mode grup (baru): Ivan bikin grup WA berisi kedua nomor. Pesan OWNER
+ * (nomor utama Ivan) di grup diteruskan relay ke inbox KEDUA Muse
+ * (from: "owner") — jadi Ivan bisa perintah/kontrol dua Muse dari satu
+ * grup. Balasan tiap Muse (outbox) dikirim relay ke grup JUGA (tambahan,
+ * bukan pengganti DM lawan). Pesan grup dari peserta bukan owner diabaikan.
+ * JID grup diisi di config.group.groupJid, atau auto-detect di live mode
+ * (grup pertama yang berisi A+B). Di dry-run, grup disimulasikan lewat
+ * file data/group-incoming.jsonl (pesan masuk) & data/group.jsonl
+ * (transkrip pesan keluar ke grup).
+ *
  * Mode:
  *   dry-run : tanpa WhatsApp sama sekali. Pesan outbox A langsung ditulis
  *             ke inbox B (dan sebaliknya) dengan penanda dry-run. Untuk
@@ -53,6 +63,47 @@ const SIDES = {
   B: config.museB,
 };
 const OTHER = { A: 'B', B: 'A' };
+
+// --- Mode grup ---------------------------------------------------------------
+// group.enabled   : false = mode grup mati total (DM A<->B tetap jalan).
+// group.groupJid  : JID grup WA, mis. "1203630xxxxxxxxx@g.us". Kosong ("") =
+//                   auto-detect di live mode (grup pertama yang berisi A+B);
+//                   di dry-run dipakai grup virtual "group-dry-run@g.us".
+// group.ownerNumber: nomor WA owner (Ivan). Kosong ("") = nomor Muse A.
+const GROUP_CFG = config.group || {};
+const GROUP_ENABLED = GROUP_CFG.enabled !== false;
+const OWNER_JID = jidOf(GROUP_CFG.ownerNumber || SIDES.A.number);
+const DRY_RUN_GROUP_JID = 'group-dry-run@g.us';
+let groupJid = GROUP_CFG.groupJid || null; // null = belum diketahui (auto-detect)
+const GROUP_FILE = resolve('data/group.jsonl'); // transkrip pesan keluar ke grup
+const GROUP_INCOMING_FILE = resolve('data/group-incoming.jsonl'); // injeksi pesan grup (dry-run)
+const GROUP_CURSOR_FILE = path.join(ROOT, 'data/.group-cursor.json');
+// Pesan grup yang sudah diproses (dedup antar 2 sesi Baileys + restart file).
+const seenGroupIds = new Set();
+// ID pesan WA yang relay sendiri kirim ke grup (anti-gema: jangan proses
+// ulang pesan sendiri yang kembali lewat sesi lawan).
+const ownGroupWaIds = new Set();
+function rememberOwnGroupWaId(id) {
+  if (!id) return;
+  ownGroupWaIds.add(id);
+  if (ownGroupWaIds.size > 1000) ownGroupWaIds.delete(ownGroupWaIds.values().next().value);
+}
+// Fallback anti-gema (kalau sendMessage tidak mengembalikan WA id):
+// teks yang baru saja relay kirim ke grup (jendela 15 dtk).
+const recentGroupSent = []; // {senderJid, text, at}
+function rememberGroupSent(senderJid, text) {
+  recentGroupSent.push({ senderJid, text, at: Date.now() });
+  while (recentGroupSent.length > 50) recentGroupSent.shift();
+}
+function isRecentGroupEcho(senderJid, text) {
+  const now = Date.now();
+  return recentGroupSent.some((r) => r.senderJid === senderJid && r.text === text && now - r.at < 15000);
+}
+function currentGroupJid() {
+  if (groupJid) return groupJid;
+  if (MODE === 'dry-run') return DRY_RUN_GROUP_JID;
+  return null;
+}
 const LOG_FILE = resolve(config.logFile || 'data/relay.log');
 const CURSOR_FILE = path.join(ROOT, 'data/.cursor.json');
 const SENT_FILE = path.join(ROOT, 'data/sent.json');
@@ -128,6 +179,118 @@ function deliverToInbox(toSide, msg, via) {
 }
 
 // ---------------------------------------------------------------------------
+// Mode grup: pesan grup WA -> inbox kedua Muse (hanya dari OWNER)
+// ---------------------------------------------------------------------------
+// Satu-satunya jalan perintah owner masuk: pesan di grup dari nomor owner.
+// Return: 'disabled' | 'not-our-group' | 'empty' | 'duplicate' |
+//         'ignored-own-echo' | 'ignored-non-owner' | 'delivered-owner'.
+function handleGroupMessage({ id, senderJid, remoteJid, text, ts, waId }) {
+  if (!GROUP_ENABLED) return 'disabled';
+  const gid = currentGroupJid();
+  if (remoteJid && gid && remoteJid !== gid) return 'not-our-group';
+  if (!text || !String(text).trim()) return 'empty';
+  if (!id) id = `grp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  if (seenGroupIds.has(id)) return 'duplicate';
+  // Anti-gema: pesan yang relay sendiri kirim ke grup jangan diproses ulang
+  // saat kembali lewat sesi Baileys lawan (pengirimnya nomor Muse = owner).
+  if (waId && ownGroupWaIds.has(waId)) return 'ignored-own-echo';
+  if (isRecentGroupEcho(senderJid, text)) return 'ignored-own-echo';
+  seenGroupIds.add(id);
+  if (senderJid !== OWNER_JID) {
+    info(`[grup] pesan dari ${senderJid} diabaikan (bukan owner)`);
+    return 'ignored-non-owner';
+  }
+  const via = MODE === 'dry-run' ? 'dry-run-group' : 'whatsapp-group';
+  const base = {
+    id, from: 'owner', text, ts: ts || Date.now(),
+    receivedAt: Date.now(), receivedAtIso: nowIso(),
+    via, group: true, groupJid: gid || undefined,
+  };
+  for (const side of ['A', 'B']) {
+    appendJsonl(resolve(SIDES[side].inbox), { ...base, to: side });
+  }
+  if (spaceSync && spaceSync.enabled) {
+    for (const side of ['A', 'B']) {
+      spaceSync.pushMessage({ ...base, to: side }).catch(() => {});
+    }
+  }
+  info(`[grup] perintah owner -> inbox A + inbox B (${id}): ${String(text).slice(0, 80)}`);
+  return 'delivered-owner';
+}
+
+// Kirim pesan outbox ke grup JUGA (tambahan, bukan pengganti DM lawan).
+// Best-effort: gagal kirim ke grup tidak menggagalkan pengiriman DM.
+async function sendToGroup(fromSide, msg) {
+  if (!GROUP_ENABLED) return;
+  const gid = currentGroupJid();
+  if (!gid) { warn('[grup] belum ada JID grup (buat grup berisi A+B dulu) — pesan hanya terkirim via DM'); return; }
+  if (MODE === 'dry-run') {
+    appendJsonl(GROUP_FILE, { id: msg.id, from: msg.from, to: 'group', text: msg.text, ts: msg.ts, groupJid: gid, via: 'dry-run-group' });
+    rememberGroupSent(jidOf(SIDES[fromSide].number), msg.text);
+    return;
+  }
+  const sock = fromSide === 'A' ? sockA : sockB;
+  if (!sock) throw new Error(`sesi ${fromSide} belum terhubung (grup)`);
+  const sentMsg = await sock.sendMessage(gid, { text: msg.text });
+  if (sentMsg && sentMsg.key && sentMsg.key.id) rememberOwnGroupWaId(sentMsg.key.id);
+  rememberGroupSent(jidOf(SIDES[fromSide].number), msg.text);
+}
+
+// Dry-run: baca pesan grup masuk dari data/group-incoming.jsonl (injeksi tes).
+// Format tiap baris: {"id":"...","senderJid":"...@s.whatsapp.net","text":"...","ts":...}
+// Di live mode file ini diabaikan (sumber pesan grup = event Baileys).
+let groupCursor = loadJson(GROUP_CURSOR_FILE, { pos: 0 }).pos || 0;
+function pollGroupIncoming() {
+  if (!GROUP_ENABLED || MODE !== 'dry-run') return;
+  if (!fs.existsSync(GROUP_INCOMING_FILE)) return;
+  const size = fs.statSync(GROUP_INCOMING_FILE).size;
+  if (groupCursor > size) groupCursor = 0;
+  if (groupCursor === size) return;
+  const chunk = fs.readFileSync(GROUP_INCOMING_FILE).subarray(groupCursor).toString('utf8');
+  groupCursor = size;
+  saveJson(GROUP_CURSOR_FILE, { pos: groupCursor });
+  for (const line of chunk.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let m;
+    try { m = JSON.parse(trimmed); } catch (_) { warn(`baris bukan JSON di group-incoming.jsonl, dilewati: ${trimmed.slice(0, 80)}`); continue; }
+    if (!m.text) { warn('pesan grup tanpa text, dilewati'); continue; }
+    handleGroupMessage({ id: m.id, senderJid: m.senderJid, remoteJid: m.remoteJid, text: m.text, ts: m.ts, waId: m.waId });
+  }
+}
+
+// Live mode: cari grup pertama yang berisi nomor A DAN nomor B.
+// Dipanggil berkala sampai ketemu (grup bisa dibuat setelah relay start).
+let detectingGroup = false;
+let lastDetectAttempt = 0;
+async function detectGroup() {
+  if (!GROUP_ENABLED || MODE !== 'live' || groupJid || detectingGroup) return;
+  if (Date.now() - lastDetectAttempt < 60000) return;
+  lastDetectAttempt = Date.now();
+  detectingGroup = true;
+  try {
+    const sock = sockA || sockB;
+    if (!sock || typeof sock.groupFetchAllParticipating !== 'function') return;
+    const groups = await sock.groupFetchAllParticipating();
+    const jidA = jidOf(SIDES.A.number);
+    const jidB = jidOf(SIDES.B.number);
+    const found = Object.values(groups || {})
+      .filter((g) => g && Array.isArray(g.participants))
+      .filter((g) => g.participants.some((p) => (p.id || p) === jidA)
+        && g.participants.some((p) => (p.id || p) === jidB))
+      .sort((x, y) => String(x.id).localeCompare(String(y.id)))[0];
+    if (found) {
+      groupJid = found.id;
+      info(`[grup] auto-detect: grup ditemukan ${groupJid} ("${found.subject || ''}") — perintah owner di grup ini diteruskan ke kedua Muse`);
+    }
+  } catch (e) {
+    warn(`[grup] auto-detect gagal: ${e.message}`);
+  } finally {
+    detectingGroup = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Antrean retry (live mode): kirim gagal dicoba lagi dengan backoff
 // ---------------------------------------------------------------------------
 const retryQueue = []; // {msg, attempts, nextTryAt}
@@ -185,12 +348,26 @@ async function connectSide(side) {
   // Pesan masuk -> inbox sisi ini (Muse pemilik nomor ini yang baca).
   sock.ev.on('messages.upsert', ({ messages }) => {
     for (const m of messages) {
-      if (!m.message || m.key.fromMe) continue; // abaikan pesan kiriman sendiri
+      if (!m.message) continue;
       const text = m.message.conversation
         || (m.message.extendedTextMessage && m.message.extendedTextMessage.text)
         || '';
       if (!text) continue;
       const fromJid = m.key.remoteJid || '';
+      // Pesan GRUP: ditangani handleGroupMessage (SEBELUM skip fromMe —
+      // pesan owner dari nomor A terlihat sebagai fromMe di sesi A, tapi
+      // sebagai pesan biasa di sesi B; dedup by id di handleGroupMessage).
+      if (fromJid.endsWith('@g.us')) {
+        const senderJid = m.key.participant || (m.key.fromMe ? jidOf(cfg.number) : fromJid);
+        handleGroupMessage({
+          id: m.key.id || `wa-${Date.now()}`,
+          senderJid, remoteJid: fromJid, text,
+          ts: (m.messageTimestamp || Date.now() / 1000) * 1000,
+          waId: m.key.id,
+        });
+        continue;
+      }
+      if (m.key.fromMe) continue; // abaikan pesan kiriman sendiri (DM)
       const record = {
         id: m.key.id || `wa-${Date.now()}`,
         from: fromJid === jidOf(SIDES.A.number) ? 'A' : fromJid === jidOf(SIDES.B.number) ? 'B' : fromJid,
@@ -245,6 +422,9 @@ async function pollOutbox(side) {
         await sendLive(side, msg);
         deliverToInbox(OTHER[side], { ...msg, deliveredVia: 'whatsapp' }, 'whatsapp');
       }
+      // Mode grup: balasan Muse juga muncul di grup (tambahan, bukan pengganti DM).
+      try { await sendToGroup(side, msg); }
+      catch (e) { warn(`[grup] kirim ${msg.id} ke grup gagal (DM tetap terkirim): ${e.message}`); }
       sentIds.add(msg.id);
       saveSent();
       appendJsonl(DELIVERED_FILE, { ...msg, deliveredAt: Date.now(), deliveredAtIso: nowIso(), via: MODE });
@@ -300,6 +480,7 @@ function writeHeartbeat() {
     relay: { pid: process.pid, mode: MODE, startedAt: STARTED_AT, lastTick: Date.now(), lastTickIso: nowIso() },
     A: { name: SIDES.A.name, lastActivity: lastActivity('A') },
     B: { name: SIDES.B.name, lastActivity: lastActivity('B') },
+    group: { enabled: GROUP_ENABLED, groupJid: currentGroupJid(), detected: Boolean(groupJid) },
   };
   saveJson(HEARTBEAT_FILE, hb);
   if (spaceSync && spaceSync.enabled) {
@@ -318,6 +499,11 @@ async function main() {
   fs.writeFileSync(PID_FILE, String(process.pid));
   info(`muse-relay mulai (mode=${MODE}, pid=${process.pid})`);
   info(`Muse A: ${SIDES.A.name} ${SIDES.A.number} | Muse B: ${SIDES.B.name} ${SIDES.B.number}`);
+  if (GROUP_ENABLED) {
+    info(`mode grup AKTIF (owner ${OWNER_JID}, grup ${groupJid || (MODE === 'dry-run' ? DRY_RUN_GROUP_JID + ' (virtual)' : 'auto-detect saat live')})`);
+  } else {
+    info('mode grup NONAKTIF (config.group.enabled=false) — hanya DM A<->B');
+  }
   info(`poll tiap ${POLL_MS}ms, heartbeat tiap ${HEARTBEAT_MS}ms`);
 
   if (MODE === 'live') {
@@ -340,6 +526,8 @@ async function main() {
     try {
       await pollOutbox('A');
       await pollOutbox('B');
+      pollGroupIncoming();
+      await detectGroup();
       await pollRetryQueue();
     } catch (e) { error(`poll error: ${e.message}`); }
   }, POLL_MS);
