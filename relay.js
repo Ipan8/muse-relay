@@ -28,9 +28,17 @@
  * library WhatsApp terinstal.
  *
  * Usage:
- *   node relay.js [--mode dry-run|live] [--config ./config.json]
+ *   node relay.js [--mode dry-run|live] [--pairing-code] [--config ./config.json]
+ *
+ * Pairing:
+ *   - Default (QR): QR muncul di terminal, di-scan dari WhatsApp
+ *     (Perangkat tertaut > Tautkan perangkat). Butuh kamera + layar lain
+ *     kalau QR-nya tampil di HP yang sama.
+ *   - --pairing-code: tanpa kamera — relay mencetak kode pairing 8 karakter
+ *     per nomor; kode itu dimasukkan di WhatsApp nomor tersebut
+ *     (Perangkat tertaut > Tautkan perangkat > "Tautkan dengan nomor
+ *     telepon"). Cocok kalau QR tampil di HP yang sama dengan WA-nya.
  */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -56,6 +64,8 @@ if (!['dry-run', 'live'].includes(MODE)) {
   console.error(`[relay] mode tidak dikenal: ${MODE} (pakai dry-run atau live)`);
   process.exit(1);
 }
+// Pairing tanpa kamera: kode 8 karakter, dimasukkan manual di WhatsApp.
+const PAIRING_CODE = argv.includes('--pairing-code');
 
 const resolve = (p) => (path.isAbsolute(p) ? p : path.join(ROOT, p));
 const SIDES = {
@@ -326,12 +336,35 @@ async function connectSide(side) {
     browser: ['muse-relay', 'Chrome', '1.0.0'],
   });
   sock.ev.on('creds.update', saveCreds);
+  // Mode pairing-code: tanpa kamera — kode 8 karakter dimasukkan di
+  // WhatsApp (Perangkat tertaut > Tautkan perangkat > "Tautkan dengan
+  // nomor telepon"). Hanya diminta kalau sesi ini belum terdaftar.
+  let pairingRequested = false;
+  if (PAIRING_CODE && !state.creds.registered) {
+    setTimeout(async () => {
+      if (pairingRequested) return;
+      pairingRequested = true;
+      try {
+        const phone = String(cfg.number).replace(/[^0-9]/g, '');
+        const code = await sock.requestPairingCode(phone);
+        info(`[live:${side}] KODE PAIRING nomor ${cfg.number}: ${code}`);
+        info(`[live:${side}] masukkan kode itu di WhatsApp ${cfg.number}: Perangkat tertaut > Tautkan perangkat > "Tautkan dengan nomor telepon" (tanpa scan QR).`);
+      } catch (e) {
+        error(`[live:${side}] gagal minta kode pairing: ${e.message} — pakai QR (jalankan tanpa --pairing-code).`);
+      }
+    }, 3000);
+  }
   sock.ev.on('connection.update', (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
-      info(`[live:${side}] scan QR ini dengan WhatsApp nomor ${cfg.number} (sekali saja, pairing manual):`);
-      try { require('qrcode-terminal').generate(qr, { small: true }); }
-      catch (_) { console.log(qr); }
+      if (PAIRING_CODE) {
+        // Kode pairing adalah jalurnya; QR tidak ditampilkan supaya tidak bingung.
+        info(`[live:${side}] (mode pairing-code: pakai kode di atas, bukan QR)`);
+      } else {
+        info(`[live:${side}] scan QR ini dengan WhatsApp nomor ${cfg.number} (sekali saja, pairing manual):`);
+        try { require('qrcode-terminal').generate(qr, { small: true }); }
+        catch (_) { console.log(qr); }
+      }
     }
     if (connection === 'open') info(`[live:${side}] terhubung sebagai ${cfg.number}`);
     if (connection === 'close') {
@@ -513,7 +546,9 @@ async function main() {
       error('Baileys belum terinstal. Jalankan: npm install');
       process.exit(1);
     }
-    info('live mode: menghubungkan 2 sesi Baileys (QR muncul sekali per nomor saat pairing)...');
+    info(PAIRING_CODE
+      ? 'live mode: menghubungkan 2 sesi Baileys (kode pairing 8 karakter per nomor, tanpa scan QR)...'
+      : 'live mode: menghubungkan 2 sesi Baileys (QR muncul sekali per nomor saat pairing)...');
     sockA = await connectSide('A');
     sockB = await connectSide('B');
   } else {

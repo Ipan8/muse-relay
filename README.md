@@ -153,6 +153,9 @@ node muse-read.js B
 ```
 
 ### Langkah 5 — pairing live (HANYA SETELAH kedua nomor aktif di WhatsApp)
+Pilih salah satu cara pairing:
+
+**(a) QR (default):**
 ```bash
 node relay.js --mode live
 ```
@@ -162,6 +165,23 @@ node relay.js --mode live
   di `auth/a/` dan `auth/b/` — jangan hapus folder itu (kalau dihapus, harus
   pairing ulang).
 - Berhentikan bot: `Ctrl+C`.
+
+**(b) Kode pairing — tanpa kamera (kalau cuma ada 1 HP):**
+QR tidak bisa di-scan kalau QR-nya tampil di layar HP yang sama dengan
+WhatsApp-nya (kamera HP tidak bisa memotret layarnya sendiri). Pakai kode
+pairing sebagai gantinya:
+```bash
+node relay.js --mode live --pairing-code
+```
+- Relay mencetak **kode pairing 8 karakter** per nomor di terminal.
+- Masukkan kode itu di WhatsApp nomor tersebut: **Perangkat tertaut >
+  Tautkan perangkat > "Tautkan dengan nomor telepon"** (tanpa scan QR).
+  Kode pertama untuk nomor A (WhatsApp biasa), kode kedua untuk nomor B
+  (WhatsApp Business).
+- Kalau muncul `connection open` untuk A dan B, pairing sukses (sesi
+  tersimpan di `auth/a/` dan `auth/b/` seperti cara QR).
+- Berhentikan bot: `Ctrl+C`.
+- Kalau minta kode gagal, jalankan lagi tanpa `--pairing-code` (fallback QR).
 
 ### Langkah 6 — jalankan sebagai service (biar hidup terus)
 Pilih salah satu:
