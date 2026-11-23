@@ -167,6 +167,19 @@ function jidOf(number) {
   return number.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
 }
 
+// Normalisasi JID ke bentuk nomor HP "digits@s.whatsapp.net".
+// Mengembalikan null kalau input bukan JID nomor HP (mis. LID "@lid").
+// Dipakai untuk participantPn & p.jid yang sudah pasti nomor HP.
+// WhatsApp kini sering memakai LID (@lid) sebagai identitas peserta grup;
+// tanpa normalisasi ini, perbandingan dengan OWNER_JID (nomor HP) gagal.
+function asPhoneJid(jid) {
+  if (!jid || typeof jid !== 'string') return null;
+  if (!jid.endsWith('@s.whatsapp.net')) return null;
+  const user = jid.slice(0, jid.indexOf('@')).split(':')[0]; // buang sufiks device ":5"
+  if (!/^\d+$/.test(user)) return null;
+  return user + '@s.whatsapp.net';
+}
+
 // ---------------------------------------------------------------------------
 // Kirim pesan masuk ke inbox lawan (dipakai dry-run & live)
 // ---------------------------------------------------------------------------
@@ -279,15 +292,35 @@ async function detectGroup() {
   lastDetectAttempt = Date.now();
   detectingGroup = true;
   try {
-    const sock = sockA || sockB;
-    if (!sock || typeof sock.groupFetchAllParticipating !== 'function') return;
-    const groups = await sock.groupFetchAllParticipating();
+    // Coba kedua sesi (sockA dulu, lalu sockB) — groupFetchAllParticipating
+    // kadang gagal "Connection Closed" di satu sesi padahal sesi lain sehat.
+    const socks = [sockA, sockB].filter(Boolean);
+    let groups = null;
+    let lastErr = null;
+    for (const sock of socks) {
+      if (typeof sock.groupFetchAllParticipating !== 'function') continue;
+      try {
+        groups = await sock.groupFetchAllParticipating();
+        break;
+      } catch (e) { lastErr = e; }
+    }
+    if (!groups) {
+      if (lastErr) warn(`[grup] auto-detect gagal: ${lastErr.message}`);
+      return;
+    }
     const jidA = jidOf(SIDES.A.number);
     const jidB = jidOf(SIDES.B.number);
+    // Peserta bisa terdaftar sebagai LID (p.id = "...@lid") — cocokkan juga
+    // lewat p.jid (JID nomor HP) yang disediakan Baileys di objek Contact.
+    const phoneOf = (p) => {
+      if (!p) return null;
+      if (typeof p === 'string') return asPhoneJid(p);
+      return asPhoneJid(p.jid) || asPhoneJid(p.id);
+    };
     const found = Object.values(groups || {})
       .filter((g) => g && Array.isArray(g.participants))
-      .filter((g) => g.participants.some((p) => (p.id || p) === jidA)
-        && g.participants.some((p) => (p.id || p) === jidB))
+      .filter((g) => g.participants.some((p) => phoneOf(p) === jidA)
+        && g.participants.some((p) => phoneOf(p) === jidB))
       .sort((x, y) => String(x.id).localeCompare(String(y.id)))[0];
     if (found) {
       groupJid = found.id;
@@ -430,7 +463,10 @@ async function connectSide(side) {
       // pesan owner dari nomor A terlihat sebagai fromMe di sesi A, tapi
       // sebagai pesan biasa di sesi B; dedup by id di handleGroupMessage).
       if (fromJid.endsWith('@g.us')) {
-        const senderJid = m.key.participant || (m.key.fromMe ? jidOf(cfg.number) : fromJid);
+        // Utamakan participantPn (nomor HP pengirim). m.key.participant
+        // bisa berupa LID ("...@lid") yang tidak cocok dengan OWNER_JID
+        // (nomor HP) — itu yang bikin pesan owner di grup diabaikan.
+        const senderJid = asPhoneJid(m.key.participantPn) || m.key.participant || (m.key.fromMe ? jidOf(cfg.number) : fromJid);
         handleGroupMessage({
           id: m.key.id || `wa-${Date.now()}`,
           senderJid, remoteJid: fromJid, text,
