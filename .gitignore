@@ -6,5 +6,7 @@ data/*.json
 data/.cursor.json
 data/.read-cursor-*.json
 data/relay.pid
+data/bridge.pid
+data/bridge.env
 config.json
 *.tmp-*

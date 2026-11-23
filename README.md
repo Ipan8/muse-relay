@@ -73,6 +73,8 @@ muse-relay/
 ├── muse-read.js          # helper: Muse baca pesan baru di inbox
 ├── muse-b.js             # Mikasa (Agent B): worker baca inbox-b, balas via outbox-b
 ├── muse-b.service        # contoh systemd unit untuk Mikasa
+├── bridge.js             # Jembatan HTTP (API inbox/outbox buat Muse di browser)
+├── bridge.service        # contoh systemd unit untuk Jembatan HTTP
 ├── space-sync.js         # sync opsional relay -> Space monitor
 ├── watchdog.sh           # cek bot tiap 5 menit, restart kalau mati
 ├── muse-relay.service    # contoh systemd unit (opsional, alternatif cron)
@@ -81,6 +83,7 @@ muse-relay/
 ├── config.example.json   # template config (PLACEHOLDER — isi dulu)
 ├── test/simulate.js      # tes simulasi tanpa nomor asli
 ├── test/simulate-muse-b.js # tes Mikasa (Agent B) tanpa nomor asli
+├── test/simulate-bridge.js # tes Jembatan HTTP tanpa nomor asli
 └── README.md             # file ini
 ```
 
@@ -140,12 +143,13 @@ Simpan: `Ctrl+O`, `Enter`, `Ctrl+X`.
 ```bash
 npm test
 ```
-Harus keluar `SEMUA TES LOLOS` + `SEMUA TES MIKASA LOLOS` (26 tes relay:
-relay start, 2 pesan A→B + 2 pesan B→A sampai di inbox yang benar, mode
-grup — perintah owner ke kedua inbox, outbox ke grup + DM, pesan non-owner
-diabaikan, dedup, anti-gema —, watchdog restart bot yang di-kill, heartbeat;
-11 tes Mikasa: sapaan + perintah dibalas, pesan sendiri + dry-run diabaikan,
-dedup, dry-run mode).
+Harus keluar `SEMUA TES LOLOS` + `SEMUA TES MIKASA LOLOS` + `SEMUA TES
+BRIDGE LOLOS` (26 tes relay: relay start, 2 pesan A→B + 2 pesan B→A sampai
+di inbox yang benar, mode grup — perintah owner ke kedua inbox, outbox ke
+grup + DM, pesan non-owner diabaikan, dedup, anti-gema —, watchdog restart
+bot yang di-kill, heartbeat; 11 tes Mikasa: sapaan + perintah dibalas, pesan
+sendiri + dry-run diabaikan, dedup, dry-run mode; tes bridge: auth 401, baca
+inbox + cursor, tulis outbox, status, 404/CORS, fail-closed tanpa token).
 Kalau ada yang FAIL, jangan lanjut — kirim outputnya ke Suneo.
 
 Tes manual:
@@ -309,6 +313,117 @@ singkat. Jangan klaim Mikasa sudah mengerjakan sesuatu yang belum
 terbukti. **Upgrade ke LLM API adalah langkah berikut** (config env
 terpisah, bukan di v1 ini).
 
+## Jembatan HTTP (API) — Muse asli baca/tulis lewat browser
+
+Muse asli (Suneo dan Mikasa) jalan di browser (Brave) dan **tidak punya
+akses file langsung ke VPS**. Jembatan ini (`bridge.js`) memberi mereka
+akses lewat web: baca inbox + tulis outbox lewat HTTP. Relay tetap yang
+meneruskan pesan ke WhatsApp (DM + grup) — bridge hanya baca/tulis file.
+
+```
+Browser Brave (Mikasa) --GET /inbox-b--> bridge (VPS) -> data/inbox-b.jsonl
+Browser Brave (Mikasa) --POST /outbox-b-> bridge (VPS) -> data/outbox-b.jsonl
+                                                  -> relay -> DM A + grup
+```
+
+**Bridge jalan sebagai service systemd di VPS — ia tetap jalan walau
+browser (Brave) ditutup.** Browser hanya kliennya; menutup Brave TIDAK
+mematikan bridge, relay, atau Mikasa template. Jadi jawaban atas "Brave
+gw close udah auto jalan?": **iya, auto jalan** — semua service VPS
+(relay, Mikasa, bridge) hidup terus selama VPS nyala.
+
+### Endpoint
+
+| Method | Endpoint | Fungsi |
+|---|---|---|
+| GET | `/inbox-a`, `/inbox-b` | Pesan yang BELUM dibaca (cursor per sisi). `?all=1` = semua pesan (tanpa majukan cursor). |
+| POST | `/outbox-a`, `/outbox-b` | Body JSON `{"text": "..."}` (wajib, tidak kosong) → tulis 1 baris ke outbox sisi itu. Balas `{ok:true, id}`. |
+| GET | `/status` | Status bridge + relay (dari `data/heartbeat.json`: pid, mode, grup terdeteksi). |
+
+**Semua endpoint wajib header `Authorization: Bearer <token>`.**
+Token dari ENV `RELAY_BRIDGE_TOKEN`. **Kalau token belum diset, server
+tetap jalan tapi MENOLAK semua request dengan 401** (fail-closed) + log
+peringatan — jadi jangan heran kalau semua 401 sebelum token diset.
+Tiap pesan inbox hanya dikirim sekali sebagai "belum dibaca" (cursor per
+sisi, seperti `muse-read.js`); pakai `?all=1` untuk baca ulang.
+
+### Install Jembatan di VPS (setelah relay + Mikasa jalan)
+
+```bash
+cd /home/ubuntu/muse-relay
+git pull
+# 1. Buat token (16 byte hex, 32 karakter) — JANGAN bagikan token ini
+#    ke grup/chat mana pun, ini kunci akses bridge:
+openssl rand -hex 16
+# 2. Tulis token + port ke data/bridge.env (file ini TIDAK di-commit):
+printf 'RELAY_BRIDGE_TOKEN=<token dari langkah 1>\nRELAY_BRIDGE_PORT=3000\n' > data/bridge.env
+# 3. Buka port di firewall VPS:
+sudo ufw allow 3000/tcp
+#    (kalau `ufw status` bilang inactive, port kemungkinan sudah terbuka;
+#    kalau VPS pakai security group cloud, buka port 3000 di sana.)
+# 4. Install + jalankan service:
+sudo cp bridge.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bridge
+sudo systemctl status bridge
+tail -20 data/bridge.log
+```
+
+### Pakai dari Brave (Mikasa / Suneo)
+
+Buka console browser (DevTools) atau pakai fetch di halaman mana pun,
+ganti `TOKEN` dengan token dari `data/bridge.env` dan `43.128.95.190`
+dengan IP/host VPS:
+
+```js
+const B = 'http://43.128.95.190:3000';
+const H = { Authorization: 'Bearer TOKEN' };
+// Mikasa baca pesan baru di inbox-b:
+await (await fetch(B + '/inbox-b', { headers: H })).json();
+// Mikasa balas ke outbox-b (relay teruskan ke DM A + grup):
+await (await fetch(B + '/outbox-b', { method: 'POST',
+  headers: { ...H, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ text: 'Halo A, ini Mikasa' }) })).json();
+// Suneo pakai sisi A: /inbox-a dan /outbox-a (cara sama).
+// Cek status relay + grup: GET /status
+await (await fetch(B + '/status', { headers: H })).json();
+```
+
+### Tes Jembatan
+
+```bash
+# Tes otomatis (tanpa nomor asli, port ephemeral, direktori temp):
+npm test   # menjalankan test/simulate.js + test/simulate-muse-b.js + test/simulate-bridge.js
+
+# Tes live dari VPS (ganti TOKEN + sesuaikan port):
+TOKEN=<token dari data/bridge.env>
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:3000/status
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:3000/inbox-b
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"text":"Halo A, tes dari bridge"}' http://127.0.0.1:3000/outbox-b
+# Tanpa token harus 401:
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000/inbox-b
+```
+
+### ⚠️ Keamanan — baca dulu
+
+- **HTTP, bukan HTTPS + token sederhana.** Jembatan v1 ini untuk pemakaian
+  Ivan sendiri. **Jangan expose port 3000 ke publik tanpa reverse
+  proxy + TLS** (mis. Caddy/Nginx + domain). Token = satu-satunya kunci;
+  siapa pun yang pegang token bisa baca inbox + tulis outbox. **Jangan
+  tulis token di grup WA / chat / repo.**
+- **Hanya inbox/outbox/status yang bisa diakses.** Bridge tidak pernah
+  expose `auth/`, `config.json`, atau kredensial apa pun, dan tidak
+  menerima path file dari user (jalur file tetap dari `config.json`).
+- **Catatan cursor:** bridge dan `muse-b.js` (Mikasa template) punya
+  cursor baca **terpisah** — keduanya membaca inbox-b, jadi kalau keduanya
+  jalan, keduanya bisa membalas pesan yang sama (balasan ganda). Kalau
+  Mikasa asli sudah terhubung lewat bridge, **matikan dulu worker
+  template** (`sudo systemctl stop muse-b`) biar tidak dobel balas.
+- Log: `data/bridge.log`. PID: `data/bridge.pid`. Cursor:
+  `data/.bridge-cursor.json`. File `data/bridge.env` berisi token dan
+  **tidak di-commit** (sudah ada di `.gitignore`).
+
 ## Mode grup — Ivan kontrol 2 Muse dari 1 grup WA
 
 Ivan bisa ngasih perintah ke **kedua Muse sekaligus** dari satu grup
@@ -385,6 +500,18 @@ Space **"Muse Relay Monitor"** menampilkan percakapan A↔B + status tiap Muse
   keduanya). Install di VPS: `git pull` + copy service + `systemctl
   enable --now muse-b`. **v1 = template, BUKAN LLM** (tanpa internet/API);
   upgrade LLM = langkah berikut.
+- [x] **Jembatan HTTP (API) v1** — DIBANGUN 23 Nov 15:28 WIB: `bridge.js`
+  (GET `/inbox-a`/`/inbox-b` + `?all=1`, POST `/outbox-a`/`/outbox-b`,
+  GET `/status`; auth Bearer `RELAY_BRIDGE_TOKEN`, fail-closed 401 kalau
+  token belum diset; cursor per sisi; CORS; stdlib `http` saja) +
+  `bridge.service` + tes `test/simulate-bridge.js` (`npm test` mencakup
+  ketiganya). Install di VPS: `git pull` + buat token (`openssl rand
+  -hex 16`) ke `data/bridge.env` + `sudo ufw allow 3000/tcp` + copy
+  service + `systemctl enable --now bridge`. **Jalan terus di VPS walau
+  Brave ditutup** (browser hanya klien). **HTTP + token sederhana —
+  jangan expose ke publik tanpa reverse proxy + TLS.** Kalau Mikasa asli
+  sudah terhubung lewat bridge, matikan dulu worker template
+  (`sudo systemctl stop muse-b`) biar tidak dobel balas.
 - [ ] **2 akun Muse** (A = Suneo akun ini, B = garasigerobak@gmail.com) — Muse B
   perlu akses ke folder ini / config yang sama di VPS (atau jalankan
   `muse-send.js` / `muse-read.js` dari terminal VPS).

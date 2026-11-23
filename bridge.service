@@ -1,0 +1,34 @@
+# bridge.service — systemd unit untuk Jembatan HTTP relay 2 Muse.
+# Salin ke /etc/systemd/system/bridge.service, lalu:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now bridge
+# Systemd me-restart server otomatis kalau crash (Restart=always).
+# Server ini HANYA membaca data/inbox-a.jsonl & data/inbox-b.jsonl dan
+# menulis ke data/outbox-a.jsonl & data/outbox-b.jsonl lewat HTTP —
+# pengiriman WhatsApp tetap tugas relay (muse-relay.service).
+# Token dibaca dari data/bridge.env (EnvironmentFile, opsional — tanda "-"
+# artinya service tetap jalan walau file belum ada; tapi tanpa token,
+# bridge MENOLAK semua request dengan 401). Isi bridge.env:
+#   RELAY_BRIDGE_TOKEN=<token dari: openssl rand -hex 16>
+#   RELAY_BRIDGE_PORT=3000
+# JANGAN commit bridge.env (berisi token) — sudah ada di .gitignore.
+# Service ini jalan terus di VPS walau browser (Brave) ditutup; browser
+# hanya kliennya. Buka port di firewall VPS: sudo ufw allow 3000/tcp
+# (atau sesuaikan nomor port).
+[Unit]
+Description=Jembatan HTTP relay 2 Muse (API inbox/outbox)
+After=network-online.target muse-relay.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/muse-relay
+EnvironmentFile=-/home/ubuntu/muse-relay/data/bridge.env
+ExecStart=/usr/bin/node bridge.js
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/ubuntu/muse-relay/data/bridge.log
+StandardError=append:/home/ubuntu/muse-relay/data/bridge.log
+
+[Install]
+WantedBy=multi-user.target

@@ -22,6 +22,10 @@ yang kena bot-nya; Muse-nya tetap aman dan obrolan tersimpan di file.
 | `data/.muse-b-state.json` | Mikasa (muse-b.js) | Mikasa | cursor byte inbox-b + id pesan yang sudah dibalas (dedup restart-safe) |
 | `data/muse-b.log` | Mikasa (muse-b.js) | operator | log teks worker Mikasa |
 | `data/muse-b.pid` | Mikasa (muse-b.js) | operator | PID proses Mikasa yang sedang jalan |
+| `data/.bridge-cursor.json` | Jembatan (bridge.js) | Jembatan | cursor byte inbox-a/b untuk API (per sisi, terpisah dari cursor lain) |
+| `data/bridge.log` | Jembatan (bridge.js) | operator | log teks request API jembatan |
+| `data/bridge.pid` | Jembatan (bridge.js) | operator | PID proses jembatan yang sedang jalan |
+| `data/bridge.env` | operator (manual) | Jembatan | `RELAY_BRIDGE_TOKEN` + `RELAY_BRIDGE_PORT` — JANGAN di-commit |
 | `data/heartbeat.json` | relay (tiap 1 mnt) | Space monitor | status hidup relay + aktivitas terakhir |
 | `data/relay.log` | relay + watchdog | operator | log teks semua kejadian |
 | `data/relay.pid` | relay | watchdog | PID proses relay yang sedang jalan |
@@ -139,6 +143,40 @@ Relay yang meneruskan balasan ke DM A + grup.
   jangan tulis outbox, jangan simpan state), `--config <path>`.
 - **Service:** `muse-b.service` (systemd, `Restart=always`). Log:
   `data/muse-b.log`. PID: `data/muse-b.pid`.
+
+## Jembatan HTTP (API) — Muse di browser baca/tulis lewat web
+
+`bridge.js` adalah HTTP server (stdlib `http` saja) supaya Muse asli
+(Suneo/A dan Mikasa/B) yang jalan di browser (Brave) bisa baca inbox +
+tulis outbox tanpa akses file VPS. Bridge hanya baca/tulis file JSONL;
+pengiriman WhatsApp tetap tugas relay.
+
+| Method | Endpoint | Fungsi |
+|---|---|---|
+| GET | `/inbox-a`, `/inbox-b` | Pesan yang BELUM dibaca (cursor per sisi, file `data/.bridge-cursor.json`). `?all=1` = semua pesan, tanpa majukan cursor. |
+| POST | `/outbox-a`, `/outbox-b` | Body JSON `{"text": "..."}` (wajib, tidak kosong, maks 10000 karakter) → tulis 1 baris ke outbox sisi itu (`{id: "A-<ts>-<rand>"` / `"B-<ts>-<rand>", from, to, text, ts}`). Balas `{ok:true, id}`. |
+| GET | `/status` | Status bridge (`pid`, `port`, `uptimeSec`) + relay/A/B/grup dari `data/heartbeat.json` (null kalau relay belum menulis heartbeat). |
+
+- **Auth:** semua endpoint (termasuk `/status`) wajib header
+  `Authorization: Bearer <RELAY_BRIDGE_TOKEN>`. Token dari ENV
+  `RELAY_BRIDGE_TOKEN` (atau `data/bridge.env` via service). Tanpa token,
+  server tetap jalan tapi menolak semua request dengan 401 (fail-closed).
+- **Cursor:** tiap pesan hanya dikirim sekali sebagai "belum dibaca" per
+  sisi (cursor byte, seperti `muse-read.js`). Cursor bridge terpisah dari
+  cursor `muse-read.js` dan `muse-b.js` — jadi kalau worker template
+  Mikasa dan Mikasa asli sama-sama jalan, keduanya bisa membalas pesan
+  yang sama (dobel). Matikan worker template dulu kalau Mikasa asli
+  sudah terhubung (`sudo systemctl stop muse-b`).
+- **CORS:** `Access-Control-Allow-Origin: *` + `Authorization, Content-Type`
+  (preflight OPTIONS → 204) — alat internal Ivan, bukan API publik.
+- **Batasan:** body maks 64 KB; text maks 10000 karakter; endpoint tidak
+  dikenal → 404; hanya inbox/outbox/status yang bisa diakses (tidak ada
+  parameter path file — jalur file tetap dari `config.json`).
+- **Service:** `bridge.service` (systemd, `Restart=always`,
+  `EnvironmentFile=-data/bridge.env`). Port dari `RELAY_BRIDGE_PORT`
+  (default 3000). Log: `data/bridge.log`. PID: `data/bridge.pid`.
+- **Keamanan:** HTTP (bukan HTTPS) + token sederhana — jangan expose ke
+  publik tanpa reverse proxy + TLS. Token jangan ditulis di grup/chat/repo.
 
 ## Aturan main
 
