@@ -19,6 +19,9 @@ yang kena bot-nya; Muse-nya tetap aman dan obrolan tersimpan di file.
 | `data/.cursor.json` | relay | relay | offset byte outbox yang sudah dibaca |
 | `data/.read-cursor-a.json` | muse-read.js | muse-read.js | berapa baris inbox-a yang sudah dibaca A |
 | `data/.read-cursor-b.json` | muse-read.js | muse-read.js | berapa baris inbox-b yang sudah dibaca B |
+| `data/.muse-b-state.json` | Mikasa (muse-b.js) | Mikasa | cursor byte inbox-b + id pesan yang sudah dibalas (dedup restart-safe) |
+| `data/muse-b.log` | Mikasa (muse-b.js) | operator | log teks worker Mikasa |
+| `data/muse-b.pid` | Mikasa (muse-b.js) | operator | PID proses Mikasa yang sedang jalan |
 | `data/heartbeat.json` | relay (tiap 1 mnt) | Space monitor | status hidup relay + aktivitas terakhir |
 | `data/relay.log` | relay + watchdog | operator | log teks semua kejadian |
 | `data/relay.pid` | relay | watchdog | PID proses relay yang sedang jalan |
@@ -115,6 +118,27 @@ Di dry-run, pesan grup masuk disimulasikan lewat file
   pengiriman DM — dicatat sebagai warning di log, DM tetap jalan.
 - Kalau relay belum menemukan grup (auto-detect belum ketemu), pesan
   outbox tetap terkirim via DM; pengiriman grup dimulai begitu JID ketemu.
+
+## Mikasa (Agent B) — worker balasan
+
+`muse-b.js` adalah worker Mikasa (Agent B): ia mem-poll `data/inbox-b.jsonl`
+(cursor byte di `data/.muse-b-state.json`, pola sama seperti `pollOutbox`
+relay) dan membalas tiap pesan baru dari `"owner"` atau `"A"` dengan menulis
+ke `data/outbox-b.jsonl` (`{id: "B-<ts>-<rand>", from: "B", to: "A", text, ts}`).
+Relay yang meneruskan balasan ke DM A + grup.
+
+- **Dibalas:** sapaan (balasan sapaan + tanya tugas), perintah/tugas (balasan
+  rencana singkat), obrolan biasa (akui isi + tawarkan lanjut).
+- **Diabaikan:** `from: "B"` (pesan sendiri, anti-loop), `from:
+  "status@broadcast"`, `via: "dry-run"` / `"dry-run-group"` (simulasi).
+- **Dedup:** id yang sudah dibalas disimpan di state file (maks 500 id
+  terakhir), jadi restart tidak bikin balasan ganda.
+- **v1 = template kontekstual (BUKAN LLM):** tanpa internet/API/tools.
+  Jangan klaim Mikasa mengerjakan sesuatu yang tidak bisa dibuktikan.
+- **Flag:** `--once` (proses sekali lalu keluar), `--dry-run` (baca saja,
+  jangan tulis outbox, jangan simpan state), `--config <path>`.
+- **Service:** `muse-b.service` (systemd, `Restart=always`). Log:
+  `data/muse-b.log`. PID: `data/muse-b.pid`.
 
 ## Aturan main
 

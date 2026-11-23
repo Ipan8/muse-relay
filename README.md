@@ -71,6 +71,8 @@ muse-relay/
 ├── relay.js              # bot utama (dry-run / live, 2 sesi Baileys)
 ├── muse-send.js          # helper: Muse tulis pesan ke outbox
 ├── muse-read.js          # helper: Muse baca pesan baru di inbox
+├── muse-b.js             # Mikasa (Agent B): worker baca inbox-b, balas via outbox-b
+├── muse-b.service        # contoh systemd unit untuk Mikasa
 ├── space-sync.js         # sync opsional relay -> Space monitor
 ├── watchdog.sh           # cek bot tiap 5 menit, restart kalau mati
 ├── muse-relay.service    # contoh systemd unit (opsional, alternatif cron)
@@ -78,6 +80,7 @@ muse-relay/
 ├── protocol.md           # spesifikasi format file outbox/inbox
 ├── config.example.json   # template config (PLACEHOLDER — isi dulu)
 ├── test/simulate.js      # tes simulasi tanpa nomor asli
+├── test/simulate-muse-b.js # tes Mikasa (Agent B) tanpa nomor asli
 └── README.md             # file ini
 ```
 
@@ -137,10 +140,12 @@ Simpan: `Ctrl+O`, `Enter`, `Ctrl+X`.
 ```bash
 npm test
 ```
-Harus keluar `SEMUA TES LOLOS` (26 tes: relay start, 2 pesan A→B + 2 pesan
-B→A sampai di inbox yang benar, mode grup — perintah owner ke kedua inbox,
-outbox ke grup + DM, pesan non-owner diabaikan, dedup, anti-gema —,
-watchdog restart bot yang di-kill, heartbeat).
+Harus keluar `SEMUA TES LOLOS` + `SEMUA TES MIKASA LOLOS` (26 tes relay:
+relay start, 2 pesan A→B + 2 pesan B→A sampai di inbox yang benar, mode
+grup — perintah owner ke kedua inbox, outbox ke grup + DM, pesan non-owner
+diabaikan, dedup, anti-gema —, watchdog restart bot yang di-kill, heartbeat;
+11 tes Mikasa: sapaan + perintah dibalas, pesan sendiri + dry-run diabaikan,
+dedup, dry-run mode).
 Kalau ada yang FAIL, jangan lanjut — kirim outputnya ke Suneo.
 
 Tes manual:
@@ -234,6 +239,76 @@ node muse-send.js B "Sip, gue eksekusi bagian listing-nya."
 node muse-read.js A
 ```
 
+## Mikasa (Agent B) — agen yang membalas otomatis
+
+**Mikasa** adalah nama Agent B. Worker-nya (`muse-b.js`) berjalan sebagai
+service terpisah di VPS: ia mem-poll `data/inbox-b.jsonl` tiap 2 detik dan
+membalas setiap pesan baru dari owner atau Muse A dengan menulis ke
+`data/outbox-b.jsonl`. Relay yang meneruskan balasan itu ke nomor A via DM
+**dan** ke grup (lihat `protocol.md`).
+
+```
+Grup WA / DM A
+  Ivan / Muse A kirim pesan
+    -> relay tulis ke data/inbox-b.jsonl
+  Mikasa (muse-b.js, poll 2 dtk) baca inbox-b
+    -> tulis balasan ke data/outbox-b.jsonl
+  relay teruskan balasan ke DM A + grup
+```
+
+### Install Mikasa di VPS (setelah relay live)
+
+```bash
+cd /home/ubuntu/muse-relay
+git pull
+sudo cp muse-b.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now muse-b
+sudo systemctl status muse-b
+tail -20 data/muse-b.log
+```
+
+### Cara kerja
+
+- **Yang dibalas:** pesan baru di inbox-b dari `"owner"` (perintah Ivan di
+  grup) atau `"A"` (Muse A). Sapaan dibalas sapaan balik + tanya tugas apa;
+  perintah/tugas dibalas dengan rencana singkat langkah yang akan dilakukan;
+  obrolan biasa dibalas dengan mengakui isinya + tawarkan lanjut.
+- **Yang diabaikan:** pesan dari `"B"` (pesan sendiri — anti-loop), dari
+  `status@broadcast`, dan pesan `via: "dry-run"` / `"dry-run-group"`
+  (simulasi, bukan live).
+- **Dedup:** id pesan yang sudah dibalas disimpan di
+  `data/.muse-b-state.json` (bersama cursor byte inbox-b), jadi restart
+  tidak bikin balasan ganda. Cursor disimpan per byte seperti relay.
+- **Bahasa:** Indonesia santai gaya lu/gue, persona Mikasa.
+- **Log:** `data/muse-b.log` (format sama seperti `relay.log`).
+
+### Tes Mikasa
+
+```bash
+# Tes otomatis (tanpa nomor asli, direktori temp terisolasi):
+npm test   # menjalankan test/simulate.js + test/simulate-muse-b.js
+
+# Tes manual satu pesan (tanpa menulis outbox):
+node muse-b.js --once --dry-run
+
+# Tes live di grup (setelah service jalan):
+# Ivan kirim "Halo Mikasa" di grup Elite Global
+# -> Mikasa harus membalas di grup + DM ke nomor A
+# Cek: tail -3 data/inbox-a.jsonl  (balasan Mikasa harus ada, from "B")
+#      tail -20 data/muse-b.log   (baris "balas ... -> outbox-b")
+```
+
+### ⚠️ Jujur soal kemampuan v1
+
+Mikasa v1 ini **bot template kontekstual, BUKAN LLM**: ia mengenali
+sapaan / perintah / obrolan lalu menjawab dari template. Ia **TIDAK**
+mengakses internet, API, atau tools apa pun, dan tidak benar-benar
+mengerjakan tugas — ia hanya mengakui perintah dan menyusun rencana
+singkat. Jangan klaim Mikasa sudah mengerjakan sesuatu yang belum
+terbukti. **Upgrade ke LLM API adalah langkah berikut** (config env
+terpisah, bukan di v1 ini).
+
 ## Mode grup — Ivan kontrol 2 Muse dari 1 grup WA
 
 Ivan bisa ngasih perintah ke **kedua Muse sekaligus** dari satu grup
@@ -303,6 +378,13 @@ Space **"Muse Relay Monitor"** menampilkan percakapan A↔B + status tiap Muse
 
 - [x] **Keputusan nomor Muse A** — DIPUTUSKAN 23 Nov 10:46: nomor utama Ivan (Ivan sadar risiko ban).
 - [ ] **Aktivasi nomor kedua di WhatsApp Business** (verifikasi via panggilan suara).
+- [x] **Agen Mikasa (Agent B) v1** — DIBANGUN 23 Nov 15:16 WIB: `muse-b.js`
+  (worker baca inbox-b + balas via outbox-b, template kontekstual Bahasa
+  Indonesia, anti-loop + dedup + `--dry-run`/`--once`) + `muse-b.service`
+  + tes `test/simulate-muse-b.js` (11 tes lolos, `npm test` mencakup
+  keduanya). Install di VPS: `git pull` + copy service + `systemctl
+  enable --now muse-b`. **v1 = template, BUKAN LLM** (tanpa internet/API);
+  upgrade LLM = langkah berikut.
 - [ ] **2 akun Muse** (A = Suneo akun ini, B = garasigerobak@gmail.com) — Muse B
   perlu akses ke folder ini / config yang sama di VPS (atau jalankan
   `muse-send.js` / `muse-read.js` dari terminal VPS).

@@ -1,0 +1,25 @@
+# muse-b.service — systemd unit untuk Mikasa (Agent B).
+# Salin ke /etc/systemd/system/muse-b.service, sesuaikan User +
+# WorkingDirectory, lalu:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now muse-b
+# Systemd me-restart worker otomatis kalau crash (Restart=always).
+# Worker ini HANYA membaca data/inbox-b.jsonl dan menulis balasan ke
+# data/outbox-b.jsonl — pengiriman WhatsApp tetap tugas relay
+# (muse-relay.service). Pastikan relay sudah jalan dulu.
+[Unit]
+Description=Mikasa (Agent B) — worker balasan inbox-b relay
+After=network-online.target muse-relay.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/muse-relay
+ExecStart=/usr/bin/node muse-b.js
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/ubuntu/muse-relay/data/muse-b.log
+StandardError=append:/home/ubuntu/muse-relay/data/muse-b.log
+
+[Install]
+WantedBy=multi-user.target
