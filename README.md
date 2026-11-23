@@ -173,6 +173,13 @@ pairing sebagai gantinya:
 ```bash
 node relay.js --mode live --pairing-code
 ```
+- **SEQUENTIAL (v3): pairing satu nomor dulu sampai terhubung, baru
+  nomor berikutnya.** Relay menghubungkan nomor A dulu; kode B BARU
+  muncul setelah A terhubung (`connection open` untuk A). Jadi dalam
+  satu waktu cuma SATU kode yang tampil — tidak ada lagi dua kode
+  bersamaan yang gampang ketuker. Kalau satu nomor belum terhubung
+  dalam 3 menit, relay lanjut otomatis ke nomor berikutnya (tidak
+  macet).
 - Relay mencetak **kode pairing 8 karakter** per nomor di terminal.
   Kode diminta saat socket masuk state pairing, lalu **di-refresh otomatis
   tiap 40 dtk** sampai sisi itu terhubung — jadi selalu ada kode segar.
@@ -182,7 +189,8 @@ node relay.js --mode live --pairing-code
 - Masukkan kode itu di WhatsApp nomor tersebut: **Perangkat tertaut >
   Tautkan perangkat > "Tautkan dengan nomor telepon"** (tanpa scan QR).
   Kode pertama untuk nomor A (WhatsApp BIASA, nomor utama), kode kedua
-  untuk nomor B (WhatsApp BUSINESS, nomor kedua). Jangan ketuker.
+  untuk nomor B (WhatsApp BUSINESS, nomor kedua). Jangan ketuker:
+  **tunggu A muncul `connection open` dulu, baru masukkan kode B.**
 - Kalau muncul `connection open` untuk A dan B, pairing sukses (sesi
   tersimpan di `auth/a/` dan `auth/b/` seperti cara QR).
 - Berhentikan bot: `Ctrl+C`.

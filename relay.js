@@ -322,6 +322,23 @@ function scheduleRetry(msg) {
 let sockA = null;
 let sockB = null;
 let baileys = null;
+// Resolver + janji "sisi ini sudah terhubung (connection open)" — dipakai
+// mode pairing-code supaya pairing berjalan SATU nomor dulu, baru nomor
+// berikutnya (dua kode sekaligus bikin gampang ketuker kode A/B).
+const sideOpenResolvers = {};
+const sideOpenPromises = {};
+// Tunggu satu sisi terhubung, maks timeoutMs; kalau lewat, lanjut saja
+// (sisi itu bisa dicoba lagi belakangan, relay tidak macet nunggu).
+async function waitSideOpen(side, timeoutMs) {
+  const p = sideOpenPromises[side];
+  if (!p) return false;
+  const ok = await Promise.race([
+    p.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+  if (!ok) warn(`[live:${side}] belum terhubung setelah ${Math.round(timeoutMs / 1000)} dtk — lanjut ke sisi berikutnya, coba pairing sisi ini lagi nanti.`);
+  return ok;
+}
 
 async function connectSide(side) {
   const cfg = SIDES[side];
@@ -369,6 +386,9 @@ async function connectSide(side) {
   if (PAIRING_CODE && !state.creds.registered) {
     setTimeout(startPairingRefresh, 10000);
   }
+  // Janji "sisi ini terhubung": resolve saat connection open (sekali saja).
+  const openPromise = new Promise((resolve) => { sideOpenResolvers[side] = resolve; });
+  sideOpenPromises[side] = openPromise;
   sock.ev.on('connection.update', (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
@@ -383,6 +403,7 @@ async function connectSide(side) {
     if (connection === 'open') {
       stopPairingRefresh();
       info(`[live:${side}] terhubung sebagai ${cfg.number}`);
+      if (sideOpenResolvers[side]) { sideOpenResolvers[side](); delete sideOpenResolvers[side]; }
     }
     if (connection === 'close') {
       stopPairingRefresh();
@@ -567,8 +588,20 @@ async function main() {
     info(PAIRING_CODE
       ? 'live mode: menghubungkan 2 sesi Baileys (kode pairing 8 karakter per nomor, tanpa scan QR)...'
       : 'live mode: menghubungkan 2 sesi Baileys (QR muncul sekali per nomor saat pairing)...');
-    sockA = await connectSide('A');
-    sockB = await connectSide('B');
+    if (PAIRING_CODE) {
+      // Pairing SEQUENTIAL: satu nomor dulu sampai terhubung, baru nomor
+      // berikutnya — supaya cuma ada SATU kode di layar dan tidak ketuker
+      // kode A/B (penyebab gagal paling umum: kode A diketik di aplikasi
+      // nomor B atau sebaliknya). Timeout 3 menit per sisi, lalu lanjut.
+      info('[live] pairing SEQUENTIAL: selesaikan nomor A dulu, baru nomor B. Cuma satu kode yang tampil dalam satu waktu.');
+      sockA = await connectSide('A');
+      await waitSideOpen('A', 180000);
+      sockB = await connectSide('B');
+      await waitSideOpen('B', 180000);
+    } else {
+      sockA = await connectSide('A');
+      sockB = await connectSide('B');
+    }
   } else {
     info('dry-run mode: tanpa WhatsApp. Pesan outbox langsung diteruskan ke inbox lawan (simulasi file-ke-file).');
   }
